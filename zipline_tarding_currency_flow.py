@@ -1,26 +1,12 @@
-# Copyright 2022 QuantRocket LLC - All Rights Reserved
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import zipline.api as algo
-from zipline.pipeline import Pipeline
-from zipline.pipeline.factors import AverageDollarVolume, Returns
 from zipline.finance.execution import MarketOrder
 
 MOMENTUM_WINDOW = 252
 ALPHA_DAYS = 10
 BETA_DAYS = 20
 GAMMA_DAYS = 10
+LONG_SIZE = 2
+SHORT_SIZE = 2
 
 def initialize(context):
     """
@@ -28,17 +14,40 @@ def initialize(context):
     live trading.
     """
     
-    context.sids_index = \
-         {"china": "FIBBG00203J8V6", "canada": "FIBBG0029T2KJ5", 
+    context.name_to_index_sids = {
+         "china": "FIBBG00203J8V6", "canada": "FIBBG0029T2KJ5", 
          "japan": "FIBBG000BL97R6", "mexico": "FIBBG0015XN496", 
          "hungary": "FIBBG000QGWGG7", "sweden": "FIBBG000QZXB02", 
          "poland": "FIBBG001CGQZG5", "korea": "FIBBG000PQY818", 
          "thailand": "FIBBG0017DVJR6", "newzealand": "FIBBG001CGQZJ2", 
-         "hongkong": "FIBBG007V5QTW1"}
-    
-    # Attach the pipeline to the algo
-    algo.attach_pipeline(make_pipeline(), 'pipeline')
+         "hongkong": "FIBBG007V5QTW1",
+    }
 
+
+    context.name_to_currency_sids = {
+        "australia": "FXAUDUSD",
+        "china": "FXUSDCNH", # china
+        "newzeland": "FXNZDUSD", #newzeland
+        "norway": "FXUSDNOK", # norway
+        "canada": "FXUSDCAD", # canada
+        "japan": "FXUSDJPY", # japan
+        "thailand": "FXUSDTHB",
+        "swiss": "FXUSDCHF", # swiss
+        "turkey": "FXUSDTRY", # turkey
+        "poland": "FXUSDPLN", # poland
+        "singapore": "FXUSDSGD",
+        "zecko": "FXUSDCZK",
+        "denmark": "FXUSDDKK", # denmark
+        "hungary": "FXUSDHUF", # hungary
+        "eu": "FXEURUSD",
+        "england": "FXGBPUSD", # uk
+        "mexico": "FXUSDMXN", # mexico
+        "hongkong": "FXUSDHKD",
+        "sweden": "FXUSDSEK", # sweden
+        "southafrica": "FXUSDZAR",
+    }
+
+    # SPY (i believe)
     algo.set_benchmark(algo.sid('FIBBG000BDTBL9'))
 
     # Rebalance every day, 30 minutes before market close.
@@ -48,71 +57,56 @@ def initialize(context):
         algo.time_rules.market_close(minutes=30),
     )
 
-def make_pipeline():
-    """
-    Create a pipeline that filters by dollar volume and
-    calculates return.
-    """
-    pipeline = Pipeline(
-        columns={
-            "returns": Returns(window_length=MOMENTUM_WINDOW),
-        },
-        screen=AverageDollarVolume(window_length=30) > 10e6
-    )
-    return pipeline
 
 def before_trading_start(context, data):
     """
     Called every day before market open.
     """
-    factors = algo.pipeline_output('pipeline')
+    pass
 
-    # Get the top 3 stocks by return
-    returns = factors["returns"].sort_values(ascending=False)
-    context.winners = returns.index[:3]
 
 def rebalance(context, data):
-    """
-    Execute orders according to our schedule_function() timing.
-    """
-
-    # calculate intraday returns for our winners
-    current_prices = data.current(context.winners, "price")
-    prior_closes = data.history(context.winners, "close", 2, "1d").iloc[0]
-    intraday_returns = (current_prices - prior_closes) / prior_closes
+    # update the long and short list
+    ind_sorted_names, df_return_inds = sort_index_returns(context, data)
+    sids_long = ind_sorted_names[-LONG_SIZE:]
+    sids_short = ind_sorted_names[:SHORT_SIZE]
 
     positions = context.portfolio.positions
 
     # Exit positions we no longer want to hold
     for asset, position in positions.items():
-        if asset not in context.winners:
+        if asset not in sids_long:
             algo.order_target_value(asset, 0, style=MarketOrder())
 
     # Enter long positions
-    for asset in context.winners:
+    for asset in sids_long:
 
         # if already long, nothing to do
         if asset in positions:
             continue
 
-        # if the stock is up for the day, don't enter
-        if intraday_returns[asset] > 0:
-            continue
-
         # otherwise, buy a fixed $100K position per asset
         algo.order_target_value(asset, 100e3, style=MarketOrder())
 
+
+def get_return(return_period_days, return_delay_days, price):
+    price_past = price.shift(return_period_days)
+    returns = (price - price_past) / price_past
+    returns = returns.fillna(method="ffill")
+    return returns.shift(return_delay_days)
+
+
 def sort_index_returns(context, data):
-    price_ind = data.history(list(context.sids_index.keys()), "close", BETA_DAYS + GAMMA_DAYS, "1d").iloc[0]
-    price_ind_past = price_ind.shift(ALPHA_DAYS)
-    return_ind = (price_ind - price_ind_past) / price_ind_past
+    price_ind = data.history(list(context.name_to_index_sids.keys()), "close", BETA_DAYS + GAMMA_DAYS, "1d")
+    return_ind = get_return(BETA_DAYS, GAMMA_DAYS, price_ind).iloc[-1]
 
     return_inds = {}
-    for name, sid in context.sids_index.items():
+    for name, sid in context.name_to_index_sids.items():
         if sid not in return_ind:
             continue
-        return_inds[name] = [return_ind[sid].iloc[-1]]
+        return_inds[name] = [return_ind[sid]]
 
     df_return_inds = pd.DataFrame.from_dict(return_inds)
     ind_sorted_names = df_return_inds.sort_values(by=0, axis=1).columns.values
     return ind_sorted_names, df_return_inds
+
