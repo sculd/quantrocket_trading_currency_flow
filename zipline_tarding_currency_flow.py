@@ -1,4 +1,4 @@
-# Copyright 2021 QuantRocket LLC - All Rights Reserved
+# Copyright 2022 QuantRocket LLC - All Rights Reserved
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,148 +14,105 @@
 
 import zipline.api as algo
 from zipline.pipeline import Pipeline
-from zipline.pipeline.factors import AverageDollarVolume, SimpleMovingAverage, ExponentialWeightedMovingStdDev
-from zipline.pipeline.data.equity_pricing import EquityPricing
-from zipline.pipeline.data.master import SecuritiesMaster
-from zipline.finance.execution import MarketOrder, LimitOrder
-from zipline.finance.order import ORDER_STATUS
-from zipline.finance import slippage, commission
-from quantrocket.realtime import collect_market_data
-from codeload.sell_gap.pipeline import make_pipeline
+from zipline.pipeline.factors import AverageDollarVolume, Returns
+from zipline.finance.execution import MarketOrder
 
-WINDOW_LENGTH = 20
+MOMENTUM_WINDOW = 252
+ALPHA_DAYS = 10
+BETA_DAYS = 20
+GAMMA_DAYS = 10
 
 def initialize(context):
     """
-    Called once at the start of a backtest, and once per day at
-    the start of live trading.
+    Called once at the start of a backtest, and once per day in
+    live trading.
     """
+    
+    context.sids_index = \
+         {"china": "FIBBG00203J8V6", "canada": "FIBBG0029T2KJ5", 
+         "japan": "FIBBG000BL97R6", "mexico": "FIBBG0015XN496", 
+         "hungary": "FIBBG000QGWGG7", "sweden": "FIBBG000QZXB02", 
+         "poland": "FIBBG001CGQZG5", "korea": "FIBBG000PQY818", 
+         "thailand": "FIBBG0017DVJR6", "newzealand": "FIBBG001CGQZJ2", 
+         "hongkong": "FIBBG007V5QTW1"}
+    
     # Attach the pipeline to the algo
-    algo.attach_pipeline(make_pipeline(WINDOW_LENGTH), 'pipeline')
+    algo.attach_pipeline(make_pipeline(), 'pipeline')
 
-    # Set SPY as benchmark
-    algo.set_benchmark(algo.sid("FIBBG000BDTBL9"))
+    algo.set_benchmark(algo.sid('FIBBG000BDTBL9'))
 
-    # identify down gaps immediately after the opening
+    # Rebalance every day, 30 minutes before market close.
     algo.schedule_function(
-        find_down_gaps,
+        rebalance,
         algo.date_rules.every_day(),
-        algo.time_rules.market_open(minutes=1),
+        algo.time_rules.market_close(minutes=30),
     )
 
-    # at 9:40, short stocks that gapped down
-    algo.schedule_function(
-        short_down_gaps,
-        algo.date_rules.every_day(),
-        algo.time_rules.market_open(minutes=10),
+def make_pipeline():
+    """
+    Create a pipeline that filters by dollar volume and
+    calculates return.
+    """
+    pipeline = Pipeline(
+        columns={
+            "returns": Returns(window_length=MOMENTUM_WINDOW),
+        },
+        screen=AverageDollarVolume(window_length=30) > 10e6
     )
-
-    # close positions 5 minutes before the close
-    algo.schedule_function(
-        close_positions,
-        algo.date_rules.every_day(),
-        algo.time_rules.market_close(minutes=5),
-    )
-
-    # Set commissions and slippage
-    algo.set_commission(
-        commission.PerShare(cost=0.0))
-    # A basis point is one one-hundredth of a percent
-    algo.set_slippage(
-        slippage.FixedBasisPointsSlippage(
-            basis_points=5.0))
+    return pipeline
 
 def before_trading_start(context, data):
     """
-    Called every day before market open. Gathers today's pipeline
-    output and initiates real-time data collection (in live trading).
+    Called every day before market open.
     """
-    context.candidates = algo.pipeline_output('pipeline')
-    context.assets_to_short = []
-    context.target_value_per_position = -50e3
+    factors = algo.pipeline_output('pipeline')
 
-    # Start real-time data collection if we are in live trading
-    if algo.get_environment("arena") == "trade":
+    # Get the top 3 stocks by return
+    returns = factors["returns"].sort_values(ascending=False)
+    context.winners = returns.index[:3]
 
-        # start real-time tick data collection for our candidates...
-        sids = [asset.real_sid for asset in context.candidates.index]
-
-        if sids:
-            # collect the trade/volume data
-            collect_market_data(
-                "us-stk-realtime",
-                sids=sids,
-                until="09:32:00 America/New_York")
-
-            # ...and point Zipline to the derived aggregate db
-            # For Interactive Brokers databases:
-            algo.set_realtime_db(
-                "us-stk-realtime-1min",
-                fields={
-                    "close": "LastPriceClose",
-                    "open": "LastPriceOpen",
-                    "high": "LastPriceHigh",
-                    "low": "LastPriceLow",
-                    "volume": "LastSizeSum"})
-            # For Alpaca databases:
-            # algo.set_realtime_db(
-            #     "us-stk-realtime-1min",
-            #     fields={
-            #         "close": "MinuteCloseClose",
-            #         "open": "MinuteOpenOpen",
-            #         "high": "MinuteHighHigh",
-            #         "low": "MinuteLowLow",
-            #         "volume": "MinuteVolumeSum"})
-
-def find_down_gaps(context, data):
+def rebalance(context, data):
     """
-    Identify stocks that gapped down below their moving average.
+    Execute orders according to our schedule_function() timing.
     """
 
-    if len(context.candidates) == 0:
-        return
+    # calculate intraday returns for our winners
+    current_prices = data.current(context.winners, "price")
+    prior_closes = data.history(context.winners, "close", 2, "1d").iloc[0]
+    intraday_returns = (current_prices - prior_closes) / prior_closes
 
-    today_opens = data.current(context.candidates.index, 'open')
-    prior_lows = context.candidates["prior_low"]
-    stds = context.candidates["std"]
+    positions = context.portfolio.positions
 
-    # find stocks that opened sufficiently below the prior day's low...
-    gapped_down = today_opens < (prior_lows - stds)
+    # Exit positions we no longer want to hold
+    for asset, position in positions.items():
+        if asset not in context.winners:
+            algo.order_target_value(asset, 0, style=MarketOrder())
 
-    # ...and are now below their moving averages
-    are_below_mavg = (today_opens < context.candidates["mavg"])
+    # Enter long positions
+    for asset in context.winners:
 
-    assets_to_short = context.candidates[
-        gapped_down
-        & are_below_mavg
-        ]
+        # if already long, nothing to do
+        if asset in positions:
+            continue
 
-    # Limit to the top 10 by std
-    assets_to_short = assets_to_short.sort_values(
-        "std", ascending=False).iloc[:10].index
+        # if the stock is up for the day, don't enter
+        if intraday_returns[asset] > 0:
+            continue
 
-    context.assets_to_short = assets_to_short
+        # otherwise, buy a fixed $100K position per asset
+        algo.order_target_value(asset, 100e3, style=MarketOrder())
 
-def short_down_gaps(context, data):
-    """
-    Short the stocks that gapped down.
-    """
-    for asset in context.assets_to_short:
+def sort_index_returns(context, data):
+    price_ind = data.history(list(context.sids_index.keys()), "close", BETA_DAYS + GAMMA_DAYS, "1d").iloc[0]
+    price_ind_past = price_ind.shift(ALPHA_DAYS)
+    return_ind = (price_ind - price_ind_past) / price_ind_past
 
-        # Sell with market order
-        algo.order_value(
-            asset,
-            context.target_value_per_position,
-            style=MarketOrder() # for IBKR, specify exchange (e.g. exchange="SMART")
-        )
+    return_inds = {}
+    for name, sid in context.sids_index.items():
+        if sid not in return_ind:
+            continue
+        return_inds[name] = [return_ind[sid].iloc[-1]]
 
-def close_positions(context, data):
-    """
-    Closes all positions.
-    """
-    for asset, position in context.portfolio.positions.items():
-        algo.order(
-            asset,
-            -position.amount,
-            style=MarketOrder()
-        )
+    df_return_inds = pd.DataFrame.from_dict(return_inds)
+    ind_sorted_names = df_return_inds.sort_values(by=0, axis=1).columns.values
+    return ind_sorted_names, df_return_inds
