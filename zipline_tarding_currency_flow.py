@@ -1,5 +1,6 @@
 import zipline.api as algo
 from zipline.finance.execution import MarketOrder
+import pandas as pd
 
 MOMENTUM_WINDOW = 252
 ALPHA_DAYS = 10
@@ -97,8 +98,10 @@ def get_return(return_period_days, return_delay_days, price):
 
 
 def sort_index_returns(context, data):
-    price_ind = data.history(list(context.name_to_index_sids.keys()), "close", BETA_DAYS + GAMMA_DAYS, "1d")
+    price_ind = data.history(list(map(lambda sid: algo.sid(sid), context.name_to_index_sids.values())), "close", BETA_DAYS + GAMMA_DAYS, "1d")
+    #price_ind = data.history([algo.sid('FIBBG000BDTBL9')], "close", BETA_DAYS + GAMMA_DAYS + 1, "1d")
     return_ind = get_return(BETA_DAYS, GAMMA_DAYS, price_ind).iloc[-1]
+    print(f"return_ind: {return_ind}")
 
     return_inds = {}
     for name, sid in context.name_to_index_sids.items():
@@ -106,6 +109,7 @@ def sort_index_returns(context, data):
             continue
         return_inds[name] = [return_ind[sid]]
 
+    print(f"return_inds: {return_inds}")
     df_return_inds = pd.DataFrame.from_dict(return_inds)
     ind_sorted_names = df_return_inds.sort_values(by=0, axis=1).columns.values
     return ind_sorted_names, df_return_inds
