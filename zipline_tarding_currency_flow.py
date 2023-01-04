@@ -14,15 +14,17 @@ def initialize(context):
     Called once at the start of a backtest, and once per day in
     live trading.
     """
-    
+
     context.name_to_index_sids = {
-         "china": "FIBBG00203J8V6", "canada": "FIBBG0029T2KJ5", 
-         "japan": "FIBBG000BL97R6", "mexico": "FIBBG0015XN496", 
-         "hungary": "FIBBG000QGWGG7", "sweden": "FIBBG000QZXB02", 
-         "poland": "FIBBG001CGQZG5", "korea": "FIBBG000PQY818", 
-         "thailand": "FIBBG0017DVJR6", "newzealand": "FIBBG001CGQZJ2", 
-         "hongkong": "FIBBG007V5QTW1",
+        "china": ("FIBBG006H1RJZ6", ""), "canada": ("FIBBG000QW7RC0", ""), 
+        "japan": ("FIBBG009S0XQY8", ""), "mexico": ("FIBBG0015XN496", "london-1d"), 
+        #"hungary": ("FIBBG000QGWGG7", "hungary-1d"), # not yet found the one in USD currency
+        #"sweden": ("FIBBG000QZXB02", "mexico-1d"), # not yet found the one in the USD currency
+        "poland": ("FIBBG001DQBCC3", "mexico-1d"), "korea": ("FIBBG000DPT7D8", ""), 
+        "thailand": ("FIBBG0017DVJR6", "london-1d"), "newzealand": ("FIBBG0015M9W30", ""), 
+        #"hongkong": ("FIBBG007V5QTW1", "china-1d"), # hkd is pegged to usd thus excluded
     }
+
 
 
     context.name_to_currency_sids = {
