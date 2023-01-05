@@ -15,7 +15,7 @@ def initialize(context):
     live trading.
     """
 
-    context.name_to_index_sids = {
+    name_to_index_sids = {
         "china": ("FIBBG006H1RJZ6", ""), "canada": ("FIBBG000QW7RC0", ""), 
         "japan": ("FIBBG009S0XQY8", ""), "mexico": ("FIBBG0015XN496", "london-1d"), 
         #"hungary": ("FIBBG000QGWGG7", "hungary-1d"), # not yet found the one in USD currency
@@ -25,12 +25,12 @@ def initialize(context):
         #"hongkong": ("FIBBG007V5QTW1", "china-1d"), # hkd is pegged to usd thus excluded
     }
 
-
+    context.name_to_index_sids = {name: index_db[0] for name, index_db in name_to_index_sids.items()}
 
     context.name_to_currency_sids = {
         "australia": "FXAUDUSD",
         "china": "FXUSDCNH", # china
-        "newzeland": "FXNZDUSD", #newzeland
+        "newzealand": "FXNZDUSD", #newzeland
         "norway": "FXUSDNOK", # norway
         "canada": "FXUSDCAD", # canada
         "japan": "FXUSDJPY", # japan
@@ -51,7 +51,7 @@ def initialize(context):
     }
 
     # SPY (i believe)
-    algo.set_benchmark(algo.sid('FIBBG000BDTBL9'))
+    algo.set_benchmark(algo.sid('FIBBG003MVLMY1'))
 
     # Rebalance every day, 30 minutes before market close.
     algo.schedule_function(
@@ -71,8 +71,11 @@ def before_trading_start(context, data):
 def rebalance(context, data):
     # update the long and short list
     ind_sorted_names, df_return_inds = sort_index_returns(context, data)
-    sids_long = ind_sorted_names[-LONG_SIZE:]
-    sids_short = ind_sorted_names[:SHORT_SIZE]
+    if len(ind_sorted_names) == 0:
+        return
+    
+    sids_long = [algo.sid(context.name_to_currency_sids[name]) for name in ind_sorted_names[-LONG_SIZE:] if name in context.name_to_currency_sids]
+    sids_short = [algo.sid(context.name_to_currency_sids[name]) for name in ind_sorted_names[:SHORT_SIZE] if name in context.name_to_currency_sids]
 
     positions = context.portfolio.positions
 
@@ -82,14 +85,15 @@ def rebalance(context, data):
             algo.order_target_value(asset, 0, style=MarketOrder())
 
     # Enter long positions
-    for asset in sids_long:
+    for sid in sids_long:
 
         # if already long, nothing to do
-        if asset in positions:
+        if sid in positions:
             continue
 
         # otherwise, buy a fixed $100K position per asset
-        algo.order_target_value(asset, 100e3, style=MarketOrder())
+        print(f'sid: {sid}')
+        algo.order_target_value(sid, 100e3, style=MarketOrder())
 
 
 def get_return(return_period_days, return_delay_days, price):
@@ -100,19 +104,22 @@ def get_return(return_period_days, return_delay_days, price):
 
 
 def sort_index_returns(context, data):
-    price_ind = data.history(list(map(lambda sid: algo.sid(sid), context.name_to_index_sids.values())), "close", BETA_DAYS + GAMMA_DAYS, "1d")
+    price_ind = data.history(list(map(lambda sid: algo.sid(sid), context.name_to_index_sids.values())), "close", BETA_DAYS + GAMMA_DAYS + 1, "1d")
     #price_ind = data.history([algo.sid('FIBBG000BDTBL9')], "close", BETA_DAYS + GAMMA_DAYS + 1, "1d")
     return_ind = get_return(BETA_DAYS, GAMMA_DAYS, price_ind).iloc[-1]
     print(f"return_ind: {return_ind}")
 
     return_inds = {}
     for name, sid in context.name_to_index_sids.items():
-        if sid not in return_ind:
+        sid_algo = algo.sid(sid)
+        if sid_algo not in return_ind:
             continue
-        return_inds[name] = [return_ind[sid]]
+        return_inds[name] = [return_ind[sid_algo]]
 
     print(f"return_inds: {return_inds}")
     df_return_inds = pd.DataFrame.from_dict(return_inds)
+    if len(return_inds) == 0:
+            return [], df_return_inds
     ind_sorted_names = df_return_inds.sort_values(by=0, axis=1).columns.values
     return ind_sorted_names, df_return_inds
 
