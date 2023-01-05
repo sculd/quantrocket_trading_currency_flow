@@ -68,6 +68,9 @@ class TradingCurrencyFlow(Moonshot):
 
         return signals
 
+    
+    
+
     def signals_to_target_weights(self, signals, prices):
         """
         This method receives a DataFrame of integer signals (-1, 0, 1) and
@@ -106,10 +109,14 @@ class TradingCurrencyFlow(Moonshot):
 class USStockCommission(PerShareCommission):
     BROKER_COMMISSION_PER_SHARE = 0.005
 
-class UpMinusDownDemo(UpMinusDown):
+class TradingCurrencyFlowDemo(TradingCurrencyFlow):
 
-    CODE = "trading-currency-flow"
-    DB = "global-1d"
-    UNIVERSES = "usstock-free"
+    CODE = "moonshot_trading_currency_flow"
+    DB = "london-1d"
+    TIMEZONE = "Europe/London"
+    UNIVERSES = "global-indiced-1d"
     TOP_N_PCT = 50
     COMMISSION_CLASS = USStockCommission
+
+
+
