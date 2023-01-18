@@ -19,52 +19,6 @@ from quantrocket.master import get_securities
 import pandas as pd
 
 
-name_to_index_sid_databases = {
-    "china": ("FIBBG006H1RJZ6", ""), "canada": ("FIBBG000QW7RC0", ""), 
-    "japan": ("FIBBG009S0XQY8", ""), "mexico": ("FIBBG0015XN496", "london-1d"), 
-    #"hungary": ("FIBBG000QGWGG7", "hungary-1d"), # not yet found the one in USD currency
-    #"sweden": ("FIBBG000QZXB02", "mexico-1d"), # not yet found the one in the USD currency
-    "poland": ("FIBBG001DQBCC3", "london-1d"), 
-    #"korea": ("FIBBG000DPT7D8", ""), 
-    "thailand": ("FIBBG0017DVJR6", "london-1d"), 
-    "newzealand": ("FIBBG0015M9W30", "nasdaq-1d"), 
-    #"hongkong": ("FIBBG007V5QTW1", "china-1d"), # hkd is pegged to usd thus excluded
-}
-
-name_to_currency_sids = {
-    "australia": "FXAUDUSD",
-    "china": "FXUSDCNH", # china
-    "newzealand": "FXNZDUSD", #newzeland
-    "norway": "FXUSDNOK", # norway
-    "canada": "FXUSDCAD", # canada
-    "japan": "FXUSDJPY", # japan
-    "thailand": "FXUSDTHB",
-    "swiss": "FXUSDCHF", # swiss
-    "turkey": "FXUSDTRY", # turkey
-    "poland": "FXUSDPLN", # poland
-    "singapore": "FXUSDSGD",
-    "zecko": "FXUSDCZK",
-    "denmark": "FXUSDDKK", # denmark
-    "hungary": "FXUSDHUF", # hungary
-    "eu": "FXEURUSD",
-    "england": "FXGBPUSD", # uk
-    "mexico": "FXUSDMXN", # mexico
-    "hongkong": "FXUSDHKD",
-    "sweden": "FXUSDSEK", # sweden
-    "southafrica": "FXUSDZAR",
-}
-sids_cash = list(get_securities(sec_types="CASH").reset_index()['Sid'].values)
-name_to_currency_sids = {name: sid for name, sid in name_to_currency_sids.items() if sid in sids_cash}
-
-name_to_index_sids = {name: index_sid_db[0] for name, index_sid_db in name_to_index_sid_databases.items()}
-name_to_index_sids = {name: sid for name, sid in name_to_index_sids.items() if name in name_to_currency_sids}
-
-index_sids = list(name_to_index_sids.values())
-
-index_sid_to_fx_sids = {
-    index_sid: name_to_currency_sids[name] for name, index_sid in name_to_index_sids.items() if name in name_to_currency_sids
-}
-
 sid_snp500 = "FIBBG000BDTBL9" # "FIBBG003MVLMY1"
 
 def if_fx_sid_has_ind_sid(fx_sid):
@@ -108,10 +62,7 @@ class TradingCurrencyFlow(Moonshot):
 
     CODE = "moonshot_trading_currency_flow"
     
-    ALPHA_DAYS = 10
-    BETA_DAYS = 20
-    GAMMA_DAYS = 10
-    LONG_SIZE = 2
+    ALPHA_DAYS = 5
     
     REBALANCE_INTERVAL = "W" # M = monthly; see https://pandas.pydata.org/pandas-docs/stable/user_guide/timeseries.html#offset-aliases
 
@@ -125,53 +76,37 @@ class TradingCurrencyFlow(Moonshot):
         print(f"df_close.columns:\n{df_close.columns}")
         
         columns_fx = [c for c in df_close.columns if 'FX' in c]
-        columns_fx = [c for c in columns_fx if if_fx_sid_has_ind_sid(c)]
-        ind_fx = [c for c in df_close.columns if 'FX' not in c and c != sid_snp500]
-        
-        df_snp500 = df_close[[sid_snp500]]
-        print(f"df_snp500:\n{df_snp500}")
-        
-        df_ind = df_close[index_sids]
-        print(f"df_ind:\n{df_ind}")
         
         df_fx = df_close[columns_fx]
         print(f"df_fx:\n{df_fx}")
         
-        df_return_snp500 = get_return(self.BETA_DAYS, self.GAMMA_DAYS, df_snp500)
-        df_return_ind = get_return(self.ALPHA_DAYS, 0, df_ind)
         df_return_fx = get_return(self.ALPHA_DAYS, 0, df_fx)
-        df_return_ind_renamed= df_return_ind.rename(columns=index_sid_to_fx_sids)
-        print(f"df_return_snp500:\n{df_return_snp500}")
-        print(f"df_return_ind:\n{df_return_ind}")
-        print(f"df_return_ind_renamed:\n{df_return_ind_renamed}")
+        print(f"df_return_fx:\n{df_return_fx}")
         
-        df_return_ind_renamed_ranks = df_return_ind_renamed.rank(axis=1, ascending=False, pct=True)
-        print(f"df_return_ind_renamed_ranks:\n{df_return_ind_renamed_ranks}")
-        longs = (df_return_ind_renamed_ranks <= 0.25)
+        # Rank the best and worst
+        top_ranks = df_return_fx.rank(axis=1, ascending=False, pct=True)
+        bottom_ranks = df_return_fx.rank(axis=1, ascending=True, pct=True)
+
+        top_n_pct = self.TOP_N_PCT / 100
+
+        # Get long and short signals and convert to 1, 0, -1
+        longs = (top_ranks <= top_n_pct)
+        shorts = (bottom_ranks <= top_n_pct)
+
         longs = longs.astype(int)
-        print(f"(df_return_ind > 0).astype(int):\n{(df_return_ind > 0).astype(int)}")
-        longs = longs * (df_return_fx > 0)
-        print(f"longs:\n{longs}")
-        longs_joined = longs.join(df_return_snp500).rename(columns={sid_snp500: 'snp500'})
-        print(f"longs_joined:\n{longs_joined.tail(20)}")
-        longs_joined[longs_joined.snp500 <= 0] = 0
-        signals = longs_joined.drop('snp500', axis=1)
-        signals = signals.rename(columns=name_to_currency_sids)
-        print(f"signals:\n{signals.tail(20)}")
-        
-        #'''
-        # Calculate the returns
+        shorts = -shorts.astype(int)
+
+        # Combine long and short signals
+        #signals = longs.where(longs == 1, shorts)
+        signals = -shorts
+
         # Resample using the rebalancing interval.
         # Keep only the last signal of the month, then fill it forward
         signals = signals.resample(self.REBALANCE_INTERVAL).last()
-        print(f"signals after resample: \n{signals}")
         signals = signals.reindex(df_close.index, method="ffill")
-        print(f"signals after reindex: \n{signals}")
-        #'''
 
         return signals
-
-
+    
     def signals_to_target_weights(self, signals, prices):
         """
         This method receives a DataFrame of integer signals (-1, 0, 1) and
@@ -216,15 +151,16 @@ class TradingCurrencyFlow(Moonshot):
         return gross_returns
 
 class USStockCommission(PercentageCommission):
-    BROKER_COMMISSION_RATE = 0.0008 # 0.08% of trade value
+    BROKER_COMMISSION_RATE = 0.0005 # 0.05% of trade value
 
 class TradingCurrencyFlowDemo(TradingCurrencyFlow):
 
-    CODE = "moonshot_trading_currency_flow"
+    CODE = "currency_momentum"
     DB = ["london-1d", "nasdaq-1d", "fx-1d", "usstock-1d"]
     #DB = ["fx-1d"]
     TIMEZONE = "Europe/London"
-    UNIVERSES = "trading-currency-flows-1d-3"
+    UNIVERSES = "fx-1d"
+    TOP_N_PCT = 25
     COMMISSION_CLASS = USStockCommission
 
 
